@@ -1,4 +1,4 @@
-# upm - Uptime Monitor
+# upm - Uptime Monitor (BurnMeter)
 
 ## Description
 
