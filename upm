@@ -1,0 +1,352 @@
+#!/bin/bash
+#
+# upm - System uptime monitoring and statistical analysis with Burn Levels
+# Author: Senior Linux Engineer + Senior Statistician
+#
+# Usage:
+#   upm                # Log current uptime (called by cron)
+#   upm --today        # Show today's statistics
+#   upm --week         # Show last 7 days statistics
+#   upm --month        # Show last 30 days statistics
+#
+
+set -o pipefail
+
+# Configuration
+LOG_FILE="/var/log/uptime.log"
+LOCK_FILE="/var/run/uptime_monitor.lock"
+
+# --- Burn Level Functions ---
+# Level 1: FreshUser 🟢
+# Level 2: CoffeeMode ☕
+# Level 3: SlightlyFried 🍳
+# Level 4: BurnoutImminent 🔥
+# Level 5: FullyCooked 💀
+
+get_burn_level_daily() {
+    local hours=$1
+    if (( $(awk "BEGIN {print ($hours <= 2)}") )); then
+        echo 1
+    elif (( $(awk "BEGIN {print ($hours <= 6)}") )); then
+        echo 2
+    elif (( $(awk "BEGIN {print ($hours <= 10)}") )); then
+        echo 3
+    elif (( $(awk "BEGIN {print ($hours <= 14)}") )); then
+        echo 4
+    else
+        echo 5
+    fi
+}
+
+get_burn_level_weekly() {
+    local hours=$1
+    if (( $(awk "BEGIN {print ($hours <= 14)}") )); then
+        echo 1
+    elif (( $(awk "BEGIN {print ($hours <= 42)}") )); then
+        echo 2
+    elif (( $(awk "BEGIN {print ($hours <= 70)}") )); then
+        echo 3
+    elif (( $(awk "BEGIN {print ($hours <= 98)}") )); then
+        echo 4
+    else
+        echo 5
+    fi
+}
+
+get_burn_level_monthly() {
+    local hours=$1
+    if (( $(awk "BEGIN {print ($hours <= 60)}") )); then
+        echo 1
+    elif (( $(awk "BEGIN {print ($hours <= 180)}") )); then
+        echo 2
+    elif (( $(awk "BEGIN {print ($hours <= 300)}") )); then
+        echo 3
+    elif (( $(awk "BEGIN {print ($hours <= 420)}") )); then
+        echo 4
+    else
+        echo 5
+    fi
+}
+
+get_burn_color() {
+    local level=$1
+    case $level in
+        1) echo -e "\033[32m" ;;  # Green
+        2) echo -e "\033[93m" ;;  # Bright Yellow
+        3) echo -e "\033[33m" ;;  # Orange
+        4) echo -e "\033[31m" ;;  # Red
+        5) echo -e "\033[35m" ;;  # Magenta
+        *) echo -e "\033[0m" ;;   # Reset
+    esac
+}
+
+get_burn_label() {
+    local level=$1
+    case $level in
+        1) echo "FreshUser 🟢" ;;
+        2) echo "CoffeeMode ☕" ;;
+        3) echo "SlightlyFried 🍳" ;;
+        4) echo "BurnoutImminent 🔥" ;;
+        5) echo "FullyCooked 💀" ;;
+        *) echo "Unknown" ;;
+    esac
+}
+
+# Function: Get uptime in seconds
+get_uptime_seconds() {
+    awk '{print int($1)}' /proc/uptime 2>/dev/null || echo "0"
+}
+
+# Function: Convert seconds to human-readable format
+seconds_to_human() {
+    local total_seconds=$1
+    local days=$((total_seconds / 86400))
+    local hours=$(((total_seconds % 86400) / 3600))
+    local minutes=$(((total_seconds % 3600) / 60))
+    
+    if [ $days -gt 0 ]; then
+        printf "%d day" $days
+        [ $days -gt 1 ] && printf "s"
+        printf ", %02d:%02d" $hours $minutes
+    else
+        printf "%02d:%02d" $hours $minutes
+    fi
+}
+
+# Function: Convert seconds to hours (decimal)
+seconds_to_hours() {
+    local total_seconds=$1
+    awk "BEGIN {printf \"%.2f\", $total_seconds/3600}"
+}
+
+# Function: Display burn level
+display_burn_level() {
+    local total_hours=$1
+    local period=$2
+    local level
+    
+    case $period in
+        "daily")
+            level=$(get_burn_level_daily $total_hours)
+            ;;
+        "weekly")
+            level=$(get_burn_level_weekly $total_hours)
+            ;;
+        "monthly")
+            level=$(get_burn_level_monthly $total_hours)
+            ;;
+        *)
+            level=0
+            ;;
+    esac
+    
+    local color=$(get_burn_color $level)
+    local label=$(get_burn_label $level)
+    local reset="\033[0m"
+    
+    echo -e "${color}Burn Level: $label (${total_hours}h total uptime)${reset}"
+}
+
+# Function: Log current uptime
+log_uptime() {
+    # Acquire lock to prevent concurrent writes
+    exec 200>"$LOCK_FILE"
+    flock -n 200 || {
+        echo "Another instance is running. Exiting." >&2
+        exit 1
+    }
+    
+    # Get current date and time
+    local current_date=$(date '+%d/%m/%Y')
+    local current_time=$(date '+%H:%M:%S')
+    
+    # Get uptime
+    local uptime_sec=$(get_uptime_seconds)
+    local uptime_human=$(seconds_to_human $uptime_sec)
+    
+    # Create log entry
+    local log_entry="${current_date}|${current_time}|uptime_seconds=${uptime_sec}|uptime_human=\"${uptime_human}\""
+    
+    # Ensure log file exists
+    touch "$LOG_FILE" 2>/dev/null || {
+        echo "Cannot create log file: $LOG_FILE" >&2
+        exit 1
+    }
+    
+    # Create temp file
+    local temp_file=$(mktemp) || exit 1
+    
+    # Read existing log, replace today's entry or append
+    local date_found=0
+    if [ -f "$LOG_FILE" ] && [ -s "$LOG_FILE" ]; then
+        while IFS= read -r line; do
+            # Skip empty lines
+            [ -z "$line" ] && continue
+            
+            # Extract date from line
+            local line_date=$(echo "$line" | cut -d'|' -f1)
+            if [ "$line_date" = "$current_date" ]; then
+                # Replace with new entry (only once)
+                if [ $date_found -eq 0 ]; then
+                    echo "$log_entry" >> "$temp_file"
+                    date_found=1
+                fi
+                # Skip old entries for same date
+            else
+                # Keep existing line
+                echo "$line" >> "$temp_file"
+            fi
+        done < "$LOG_FILE"
+    fi
+    
+    # If date not found, append new entry
+    if [ $date_found -eq 0 ]; then
+        echo "$log_entry" >> "$temp_file"
+    fi
+    
+    # Atomic replace
+    mv "$temp_file" "$LOG_FILE"
+    chmod 644 "$LOG_FILE"
+    
+    # Release lock
+    flock -u 200
+}
+
+# Function: Parse log entry and extract uptime in seconds
+parse_uptime() {
+    local line=$1
+    echo "$line" | grep -o 'uptime_seconds=[0-9]*' | cut -d'=' -f2
+}
+
+# Function: Calculate statistics
+calculate_statistics() {
+    local period=$1
+    shift
+    local -a values=("$@")
+    local count=${#values[@]}
+    
+    if [ $count -eq 0 ]; then
+        echo "No data available"
+        return
+    fi
+    
+    # Sort values numerically
+    local sorted=($(printf '%s\n' "${values[@]}" | sort -n))
+    
+    # Minimum
+    local min=${sorted[0]}
+    
+    # Maximum
+    local max=${sorted[$((count-1))]}
+    
+    # Calculate total sum
+    local sum=0
+    for val in "${values[@]}"; do
+        sum=$((sum + val))
+    done
+    
+    # Mean (using awk for floating point)
+    local mean=$(awk "BEGIN {printf \"%.2f\", $sum/$count}")
+    
+    # Convert to hours for burn level display
+    local total_hours=$(seconds_to_hours $sum)
+    local avg_hours=$(seconds_to_hours ${mean%.*})
+    
+    # Output statistics
+    echo "Sample Size:   $count measurements"
+    echo "Total Uptime:  $(seconds_to_human $sum) (${total_hours}h)"
+    echo "Average:       $(seconds_to_human ${mean%.*}) (${avg_hours}h)"
+    echo "Minimum:       $(seconds_to_human $min)"
+    echo "Maximum:       $(seconds_to_human $max)"
+    echo ""
+    
+    # Display burn level based on TOTAL uptime for the period
+    echo "=== BURN LEVEL ANALYSIS ==="
+    display_burn_level ${total_hours%.*} "$period"
+}
+
+# Function: Convert DD/MM/YYYY to YYYYMMDD for simple comparison
+date_to_sortable() {
+    local ddmmyyyy=$1
+    local day=$(echo "$ddmmyyyy" | cut -d'/' -f1)
+    local month=$(echo "$ddmmyyyy" | cut -d'/' -f2)
+    local year=$(echo "$ddmmyyyy" | cut -d'/' -f3)
+    echo "${year}${month}${day}"
+}
+
+# Function: Get date N days ago in DD/MM/YYYY format
+get_date_days_ago() {
+    local days_ago=$1
+    date -d "$days_ago days ago" '+%d/%m/%Y' 2>/dev/null || date -v-${days_ago}d '+%d/%m/%Y' 2>/dev/null
+}
+
+# Function: Filter log by date range
+filter_logs() {
+    local days_back=$1
+    local period=$2
+    
+    if [ ! -f "$LOG_FILE" ]; then
+        echo "Log file not found: $LOG_FILE" >&2
+        return 1
+    fi
+    
+    # Get today's date
+    local today=$(date '+%d/%m/%Y')
+    local today_sortable=$(date_to_sortable "$today")
+    
+    # Get cutoff date
+    local cutoff_date=$(get_date_days_ago $days_back)
+    local cutoff_sortable=$(date_to_sortable "$cutoff_date")
+    
+    local -a valid_values=()
+    
+    echo "Date       |Time    |Uptime"
+    echo "-----------|--------|------------------------"
+    
+    while IFS= read -r line; do
+        # Skip empty or malformed lines
+        [ -z "$line" ] && continue
+        echo "$line" | grep -q '|' || continue
+        
+        # Extract date
+        local log_date=$(echo "$line" | cut -d'|' -f1)
+        local log_sortable=$(date_to_sortable "$log_date")
+        
+        # Compare dates (YYYYMMDD format allows simple numeric comparison)
+        if [ "$log_sortable" -ge "$cutoff_sortable" ] && [ "$log_sortable" -le "$today_sortable" ]; then
+            # Parse and display
+            local log_time=$(echo "$line" | cut -d'|' -f2)
+            local uptime_sec=$(parse_uptime "$line")
+            local uptime_hum=$(echo "$line" | cut -d'|' -f4 | cut -d'"' -f2)
+            
+            if [ -n "$uptime_sec" ] && [ "$uptime_sec" -ge 0 ]; then
+                printf "%s|%s|%s\n" "$log_date" "$log_time" "$uptime_hum"
+                valid_values+=("$uptime_sec")
+            fi
+        fi
+    done < "$LOG_FILE"
+    
+    echo ""
+    echo "=== UPTIME STATISTICS ==="
+    calculate_statistics "$period" "${valid_values[@]}"
+}
+
+# Main execution
+case "${1:-}" in
+    --today)
+        filter_logs 0 "daily"
+        ;;
+    --week)
+        filter_logs 6 "weekly"
+        ;;
+    --month)
+        filter_logs 29 "monthly"
+        ;;
+    "")
+        log_uptime
+        ;;
+    *)
+        echo "Usage: $0 [--today|--week|--month]" >&2
+        exit 1
+        ;;
+esac
