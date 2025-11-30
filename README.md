@@ -12,27 +12,40 @@
 *   **Flexible Reporting**: View uptime statistics for today, the last 7 days, or the last 30 days.
 *   **Dependency-Free**: A single Bash script with no external dependencies.
 
+## Configuration
+
+The script stores its log and lock files in the `~/.upm` directory in your home folder.
+
+*   **Log File**: `~/.upm/uptime.log`
+*   **Lock File**: `~/.upm/uptime_monitor.lock`
+
 ## Installation
 
-1.  **Make the script executable:**
+1.  **Create the log directory and file:**
+    The script requires a directory in your home folder to store its data.
+    ```bash
+    mkdir -p ~/.upm
+    touch ~/.upm/uptime.log
+    ```
+
+2.  **Make the script executable:**
     ```bash
     chmod +x upm
     ```
 
-2.  **Place the script in your PATH:**
+3.  **Place the script in your PATH:**
     For system-wide access, move the script to a directory in your `$PATH`.
     ```bash
-    sudo mv upm /usr/local/bin/
+    mv upm /usr/local/bin/
     ```
 
-3.  **Set up a cron job for logging:**
+4.  **Set up a cron job for logging:**
     The script is intended to log uptime automatically. Add a cron job to run the `upm` command at your desired frequency. For example, to log uptime every 5 minutes, edit your crontab (`crontab -e`) and add the following line:
 
     ```crontab
-    @reboot sudo /usr/local/bin/upm
-    */5 * * * * sudo /usr/local/bin/upm
+    @reboot /usr/local/bin/upm
+    */5 * * * * /usr/local/bin/upm
     ```
-    **Note:** `sudo` is required because the default log file (`/var/log/uptime.log`) and lock file (`/var/run/uptime_monitor.lock`) are in privileged directories. You can change these paths in the script if you prefer to run it without `sudo`.
 
 ## Usage
 
@@ -40,7 +53,7 @@
 
 To log the current uptime manually, run the script without any arguments:
 ```bash
-sudo upm
+upm
 ```
 
 ### Viewing Statistics
