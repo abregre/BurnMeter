@@ -336,7 +336,7 @@ update_or_add_entry() {
                 found=1
             else
                 # Keep other entries as-is
-                echo "$log_date $log_start $log_last $log_total" >> "$temp_file"
+                echo "$log_date $log_start $log_last $log_prev_total" >> "$temp_file"
             fi
         done < "$LOG_FILE"
 
