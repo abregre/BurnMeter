@@ -2,30 +2,36 @@
 
 ## Description
 
-`upm` is a lightweight, dependency-free fun(🥲) Bash script for monitoring system uptime and providing statistical analysis. It's designed to be run as a cron job to periodically log uptime data, which can then be analyzed to show statistics for the current day, week, or month.
+`upm` is a lightweight, dependency-free fun(🥲) Bash script for monitoring system uptime and providing statistical analysis. It's designed to be run as a cron job to periodically log uptime data, which can then be analyzed to show statistics for the current day, week, or month. The script now includes sophisticated tracking across system reboots with daily accumulation and current session state management to provide accurate uptime measurements even across system restarts.
 
 ## Features
 
 *   **Uptime Logging**: Automatically logs system uptime with timestamps.
-*   **Statistical Analysis**: Calculates and displays statistics like minimum, maximum, total, and average uptime.
+*   **Multi-Boot Tracking**: Maintains uptime tracking across system reboots and multi-day sessions.
+*   **Daily Accumulation**: Tracks accumulated uptime for each day, including time from previous boots.
+*   **Session State Management**: Maintains state of current session to properly calculate incremental uptime.
+*   **Statistical Analysis**: Calculates and displays statistics like daily, weekly, and monthly totals.
 *   **Burn Level Analysis**: A unique feature that provides a "Burn Level" to gauge system usage intensity over different periods.
 *   **Flexible Reporting**: View uptime statistics for today, the last 7 days, or the last 30 days.
 *   **Dependency-Free**: A single Bash script with no external dependencies.
 
 ## Configuration
 
-The script stores its log and lock files in the `~/.upm` directory in your home folder.
+The script stores its log and state files in the `~/.upm` directory in your home folder.
 
 *   **Log File**: `~/.upm/uptime.log`
-*   **Lock File**: `~/.upm/uptime_monitor.lock`
+*   **Daily Accumulator**: `~/.upm/daily_accumulator`
+*   **Current Session State**: `~/.upm/current_session_state`
 
 ## Installation
 
-1.  **Create the log directory and file:**
+1.  **Create the log directory and required files:**
     The script requires a directory in your home folder to store its data.
     ```bash
     mkdir -p ~/.upm
     touch ~/.upm/uptime.log
+    touch ~/.upm/daily_accumulator
+    touch ~/.upm/current_session_state
     ```
 
 2.  **Make the script executable:**
@@ -43,7 +49,6 @@ The script stores its log and lock files in the `~/.upm` directory in your home 
     The script is intended to log uptime automatically. Add a cron job to run the `upm` command at your desired frequency. For example, to log uptime every 5 minutes, edit your crontab (`crontab -e`) and add the following line:
 
     ```crontab
-    @reboot /usr/local/bin/upm
     */5 * * * * /usr/local/bin/upm
     ```
 
@@ -60,9 +65,9 @@ upm
 
 To view uptime statistics, use the following flags:
 
-*   **`--today`**: Show statistics for the current day.
+*   **`--day`**: Show statistics for the current day.
     ```bash
-    upm --today
+    upm --day
     ```
 *   **`--week`**: Show statistics for the last 7 days.
     ```bash
@@ -76,25 +81,26 @@ To view uptime statistics, use the following flags:
 ### Example Output
 ```
 $ upm --week
-Date       |Time    |Uptime
------------|--------|------------------------
-24/11/2025|10:00:05|1 day, 02:30
-25/11/2025|10:00:01|2 days, 02:30
-26/11/2025|10:00:06|3 days, 02:30
-27/11/2025|09:05:01|00:15
-28/11/2025|10:00:02|1 day, 01:10
-29/11/2025|10:00:03|2 days, 01:10
-30/11/2025|10:00:04|3 days, 01:10
+2025-01-01 02:30:00 FreshUser 🟢
+2025-01-02 05:45:30 CoffeeMode ☕
+2025-01-03 08:20:15 SlightlyFried 🍳
+2025-01-04 01:10:05 FreshUser 🟢
+2025-01-05 03:30:45 CoffeeMode ☕
+2025-01-06 07:20:30 SlightlyFried 🍳
+2025-01-07 12:45:20 BurnoutImminent 🔥
 
-=== UPTIME STATISTICS ===
-Sample Size:   7 measurements
-Total Uptime:  12 days, 09:45 (309.75h)
-Average:       1 day, 18:15 (42.82h)
-Minimum:       00:15
-Maximum:       3 days, 02:30
+Weekly Total: 39:12:25 - BurnoutImminent 🔥
 
-=== BURN LEVEL ANALYSIS ===
-Burn Level: SlightlyFried 🍳 (309h total uptime)
+$ upm --day
+Today (2025-01-07): 12:45:20 - BurnoutImminent 🔥
+
+$ upm --month
+Week 1: 45:30:15 - SlightlyFried 🍳
+Week 2: 62:15:40 - BurnoutImminent 🔥
+Week 3: 38:45:25 - CoffeeMode ☕
+Week 4: 52:20:35 - BurnoutImminent 🔥
+
+Monthly Total: 198:51:55 - FullyCooked 💀
 ```
 
 ## Burn Levels
