@@ -176,39 +176,31 @@ log_uptime() {
         exit 1
     }
     
-    # Create temp file
-    local temp_file=$(mktemp) || exit 1
+    # Check if this is a reboot (uptime is less than last entry for today)
+    local is_reboot=0
+    local last_uptime_today=0
     
-    # Read existing log, replace today's entry or append
-    local date_found=0
     if [ -f "$LOG_FILE" ] && [ -s "$LOG_FILE" ]; then
+        # Get the last entry for today
         while IFS= read -r line; do
-            # Skip empty lines
             [ -z "$line" ] && continue
-            
-            # Extract date from line
             local line_date=$(echo "$line" | cut -d'|' -f1)
             if [ "$line_date" = "$current_date" ]; then
-                # Replace with new entry (only once)
-                if [ $date_found -eq 0 ]; then
-                    echo "$log_entry" >> "$temp_file"
-                    date_found=1
+                local line_uptime=$(echo "$line" | grep -o 'uptime_seconds=[0-9]*' | cut -d'=' -f2)
+                if [ -n "$line_uptime" ]; then
+                    last_uptime_today=$line_uptime
                 fi
-                # Skip old entries for same date
-            else
-                # Keep existing line
-                echo "$line" >> "$temp_file"
             fi
         done < "$LOG_FILE"
+        
+        # If current uptime is less than last logged uptime for today, it's a reboot
+        if [ $last_uptime_today -gt 0 ] && [ $uptime_sec -lt $last_uptime_today ]; then
+            is_reboot=1
+        fi
     fi
     
-    # If date not found, append new entry
-    if [ $date_found -eq 0 ]; then
-        echo "$log_entry" >> "$temp_file"
-    fi
-    
-    # Atomic replace
-    mv "$temp_file" "$LOG_FILE"
+    # Always append new entry (don't replace)
+    echo "$log_entry" >> "$LOG_FILE"
     chmod 644 "$LOG_FILE"
     
     # Release lock
@@ -283,7 +275,7 @@ get_date_days_ago() {
     date -d "$days_ago days ago" '+%d/%m/%Y' 2>/dev/null || date -v-${days_ago}d '+%d/%m/%Y' 2>/dev/null
 }
 
-# Function: Filter log by date range
+# Function: Filter log by date range and aggregate by day
 filter_logs() {
     local days_back=$1
     local period=$2
@@ -301,9 +293,11 @@ filter_logs() {
     local cutoff_date=$(get_date_days_ago $days_back)
     local cutoff_sortable=$(date_to_sortable "$cutoff_date")
     
-    local -a valid_values=()
+    # Use associative array to store daily totals
+    declare -A daily_totals
+    declare -A daily_entries
     
-    echo "Date       |Time    |Uptime"
+    echo "Date       |Sessions|Total Daily Uptime"
     echo "-----------|--------|------------------------"
     
     while IFS= read -r line; do
@@ -317,21 +311,34 @@ filter_logs() {
         
         # Compare dates (YYYYMMDD format allows simple numeric comparison)
         if [ "$log_sortable" -ge "$cutoff_sortable" ] && [ "$log_sortable" -le "$today_sortable" ]; then
-            # Parse and display
-            local log_time=$(echo "$line" | cut -d'|' -f2)
             local uptime_sec=$(parse_uptime "$line")
-            local uptime_hum=$(echo "$line" | cut -d'|' -f4 | cut -d'"' -f2)
             
             if [ -n "$uptime_sec" ] && [ "$uptime_sec" -ge 0 ]; then
-                printf "%s|%s|%s\n" "$log_date" "$log_time" "$uptime_hum"
-                valid_values+=("$uptime_sec")
+                # Add to daily total
+                if [ -z "${daily_totals[$log_date]}" ]; then
+                    daily_totals[$log_date]=0
+                    daily_entries[$log_date]=0
+                fi
+                daily_totals[$log_date]=$((${daily_totals[$log_date]} + uptime_sec))
+                daily_entries[$log_date]=$((${daily_entries[$log_date]} + 1))
             fi
         fi
     done < "$LOG_FILE"
     
+    # Display daily totals in chronological order
+    local -a all_daily_values=()
+    for log_date in $(printf '%s\n' "${!daily_totals[@]}" | sort -t'/' -k3,3n -k2,2n -k1,1n); do
+        local total_sec=${daily_totals[$log_date]}
+        local num_sessions=${daily_entries[$log_date]}
+        local total_human=$(seconds_to_human $total_sec)
+        
+        printf "%s|%-8d|%s\n" "$log_date" "$num_sessions" "$total_human"
+        all_daily_values+=("$total_sec")
+    done
+    
     echo ""
     echo "=== UPTIME STATISTICS ==="
-    calculate_statistics "$period" "${valid_values[@]}"
+    calculate_statistics "$period" "${all_daily_values[@]}"
 }
 
 # Main execution
