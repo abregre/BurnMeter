@@ -15,6 +15,12 @@
 *   **Flexible Reporting**: View uptime statistics for today, the last 7 days, or the last 30 days.
 *   **Dependency-Free**: A single Bash script with no external dependencies.
 
+## Features to be Added
+
+*   **Session Counting Daily**: Show total system sessions for the current day.
+*   **Session Counting Weekly**: Show total system sessions for each day of the week.
+*   **Enhanced Output Styling**: Improved formatting with better colors, tables, and visual indicators for all output types.
+
 ## Configuration
 
 The script stores its log and state files in the `~/.upm` directory in your home folder.
