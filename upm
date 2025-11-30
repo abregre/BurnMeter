@@ -1,85 +1,197 @@
-#!/bin/bash
-#
-# upm - System uptime monitoring and statistical analysis with Burn Levels
-# Author: Senior Linux Engineer + Senior Statistician
-#
-# Usage:
-#   upm                # Log current uptime (called by cron)
-#   upm --today        # Show today's statistics
-#   upm --week         # Show last 7 days statistics
-#   upm --month        # Show last 30 days statistics
-#
+#!/usr/bin/env bash
+set -euo pipefail
 
-set -o pipefail
+# upm - Uptime Monitor
+# Tracks system uptime across multiple days with burn level analysis
 
-# Configuration
-LOG_FILE="${HOME}/.upm/uptime.log"
-LOCK_FILE="${HOME}/.upm/uptime_monitor.lock"
+readonly UPM_DIR="${HOME}/.upm"
+readonly LOG_FILE="${UPM_DIR}/uptime.log"
+readonly DAILY_ACCUMULATOR="${UPM_DIR}/daily_accumulator"
+readonly CURRENT_SESSION_STATE="${UPM_DIR}/current_session_state"
 
-# --- Burn Level Functions ---
-# Level 1: FreshUser 🟢
-# Level 2: CoffeeMode ☕
-# Level 3: SlightlyFried 🍳
-# Level 4: BurnoutImminent 🔥
-# Level 5: FullyCooked 💀
+# Colors for burn levels
+readonly COLOR_RESET='\e[0m'
+readonly COLOR_GREEN='\e[0;32m'
+readonly COLOR_YELLOW='\e[0;33m'
+readonly COLOR_ORANGE='\e[0;38;5;208m'
+readonly COLOR_RED='\e[0;31m'
+readonly COLOR_DARK_RED='\e[0;38;5;88m'
 
+# Initialize directory structure
+init_upm() {
+    mkdir -p "${UPM_DIR}"
+    touch "${LOG_FILE}"
+    touch "${DAILY_ACCUMULATOR}"
+    touch "${CURRENT_SESSION_STATE}"
+}
+
+# Get accumulated uptime for the current day (including previous boots)
+get_daily_accumulated_time() {
+    local current_date
+    current_date=$(date +%Y-%m-%d)
+
+    if [ -f "$DAILY_ACCUMULATOR" ] && [ -s "$DAILY_ACCUMULATOR" ]; then
+        local stored_date stored_accumulated
+        # Read the stored date and accumulated time
+        IFS=' ' read -r stored_date stored_accumulated < "$DAILY_ACCUMULATOR"
+
+        # If stored date is different from current date, reset accumulator
+        if [ "$stored_date" != "$current_date" ]; then
+            stored_accumulated=0
+        fi
+    else
+        stored_accumulated=0
+    fi
+
+    echo "$stored_accumulated"
+}
+
+# Get and update the last recorded uptime for the current session
+get_current_session_state() {
+    local current_boot_time=$1
+    local current_uptime=$2
+
+    if [ -f "$CURRENT_SESSION_STATE" ] && [ -s "$CURRENT_SESSION_STATE" ]; then
+        local stored_boot_time stored_last_uptime
+        IFS=' ' read -r stored_boot_time stored_last_uptime < "$CURRENT_SESSION_STATE"
+
+        # Check if it's the same boot session (same boot time)
+        if [ "$stored_boot_time" = "$current_boot_time" ]; then
+            # Same session, return the last uptime recorded
+            echo "$stored_last_uptime"
+        else
+            # Different session (new boot), reset and return 0
+            echo 0
+        fi
+    else
+        # No file or empty, return 0
+        echo 0
+    fi
+}
+
+# Update the current session state
+update_current_session_state() {
+    local boot_time=$1
+    local current_uptime=$2
+
+    echo "$boot_time $current_uptime" > "$CURRENT_SESSION_STATE"
+}
+
+# Update accumulated uptime for the current day (only if larger than stored)
+update_daily_accumulator() {
+    local current_date
+    current_date=$(date +%Y-%m-%d)
+    local current_accumulated=$1
+
+    # Check if there's already a stored value for today
+    if [ -f "$DAILY_ACCUMULATOR" ] && [ -s "$DAILY_ACCUMULATOR" ]; then
+        local stored_date stored_time
+        IFS=' ' read -r stored_date stored_time < "$DAILY_ACCUMULATOR"
+
+        # Only update if it's the same date and the new value is larger (or different date)
+        if [ "$stored_date" = "$current_date" ]; then
+            if [ "$current_accumulated" -gt "$stored_time" ]; then
+                echo "$current_date $current_accumulated" > "$DAILY_ACCUMULATOR"
+            fi
+        else
+            # Different date, so definitely update
+            echo "$current_date $current_accumulated" > "$DAILY_ACCUMULATOR"
+        fi
+    else
+        # No file or empty, create new entry
+        echo "$current_date $current_accumulated" > "$DAILY_ACCUMULATOR"
+    fi
+}
+
+# Get system boot time as Unix timestamp
+get_boot_time() {
+    local uptime_seconds
+    uptime_seconds=$(awk '{print int($1)}' /proc/uptime)
+    echo $(($(date +%s) - uptime_seconds))
+}
+
+# Get current uptime in seconds
+get_uptime_seconds() {
+    awk '{print int($1)}' /proc/uptime
+}
+
+# Convert seconds to HH:MM:SS format
+seconds_to_hms() {
+    local total_seconds=$1
+    local hours=$((total_seconds / 3600))
+    local minutes=$(((total_seconds % 3600) / 60))
+    local seconds=$((total_seconds % 60))
+    printf "%02d:%02d:%02d" "$hours" "$minutes" "$seconds"
+}
+
+# Get burn level for daily uptime (in seconds)
 get_burn_level_daily() {
-    local hours=$1
-    if (( $(awk "BEGIN {print ($hours <= 2)}") )); then
+    local seconds=$1
+    local hours=$((seconds / 3600))
+
+    if [ "$hours" -lt 2 ]; then
         echo 1
-    elif (( $(awk "BEGIN {print ($hours <= 6)}") )); then
+    elif [ "$hours" -lt 6 ]; then
         echo 2
-    elif (( $(awk "BEGIN {print ($hours <= 10)}") )); then
+    elif [ "$hours" -lt 10 ]; then
         echo 3
-    elif (( $(awk "BEGIN {print ($hours <= 14)}") )); then
+    elif [ "$hours" -lt 14 ]; then
         echo 4
     else
         echo 5
     fi
 }
 
+# Get burn level for weekly uptime (in seconds)
 get_burn_level_weekly() {
-    local hours=$1
-    if (( $(awk "BEGIN {print ($hours <= 14)}") )); then
+    local seconds=$1
+    local hours=$((seconds / 3600))
+
+    if [ "$hours" -lt 14 ]; then
         echo 1
-    elif (( $(awk "BEGIN {print ($hours <= 42)}") )); then
+    elif [ "$hours" -lt 42 ]; then
         echo 2
-    elif (( $(awk "BEGIN {print ($hours <= 70)}") )); then
+    elif [ "$hours" -lt 70 ]; then
         echo 3
-    elif (( $(awk "BEGIN {print ($hours <= 98)}") )); then
+    elif [ "$hours" -lt 98 ]; then
         echo 4
     else
         echo 5
     fi
 }
 
+# Get burn level for monthly uptime (in seconds)
 get_burn_level_monthly() {
-    local hours=$1
-    if (( $(awk "BEGIN {print ($hours <= 60)}") )); then
+    local seconds=$1
+    local hours=$((seconds / 3600))
+
+    if [ "$hours" -lt 60 ]; then
         echo 1
-    elif (( $(awk "BEGIN {print ($hours <= 180)}") )); then
+    elif [ "$hours" -lt 180 ]; then
         echo 2
-    elif (( $(awk "BEGIN {print ($hours <= 300)}") )); then
+    elif [ "$hours" -lt 300 ]; then
         echo 3
-    elif (( $(awk "BEGIN {print ($hours <= 420)}") )); then
+    elif [ "$hours" -lt 420 ]; then
         echo 4
     else
         echo 5
     fi
 }
 
+# Get color for burn level
 get_burn_color() {
     local level=$1
     case $level in
-        1) echo -e "\033[32m" ;;  # Green
-        2) echo -e "\033[93m" ;;  # Bright Yellow
-        3) echo -e "\033[33m" ;;  # Orange
-        4) echo -e "\033[31m" ;;  # Red
-        5) echo -e "\033[35m" ;;  # Magenta
-        *) echo -e "\033[0m" ;;   # Reset
+        1) printf '%b' "$COLOR_GREEN" ;;
+        2) printf '%b' "$COLOR_YELLOW" ;;
+        3) printf '%b' "$COLOR_ORANGE" ;;
+        4) printf '%b' "$COLOR_RED" ;;
+        5) printf '%b' "$COLOR_DARK_RED" ;;
+        *) printf '%b' "$COLOR_RESET" ;;
     esac
 }
 
+# Get label for burn level
 get_burn_label() {
     local level=$1
     case $level in
@@ -88,275 +200,329 @@ get_burn_label() {
         3) echo "SlightlyFried 🍳" ;;
         4) echo "BurnoutImminent 🔥" ;;
         5) echo "FullyCooked 💀" ;;
-        *) echo "Unknown" ;;
+        *) echo "BURN-$level" ;;
     esac
 }
 
-# Function: Get uptime in seconds
-get_uptime_seconds() {
-    awk '{print int($1)}' /proc/uptime 2>/dev/null || echo "0"
-}
+# Log uptime (main logic)
+log_uptime() {
+    local boot_time current_time current_date uptime_seconds
 
-# Function: Convert seconds to human-readable format
-seconds_to_human() {
-    local total_seconds=$1
-    local days=$((total_seconds / 86400))
-    local hours=$(((total_seconds % 86400) / 3600))
-    local minutes=$(((total_seconds % 3600) / 60))
-    
-    if [ $days -gt 0 ]; then
-        printf "%d day" $days
-        [ $days -gt 1 ] && printf "s"
-        printf ", %02d:%02d" $hours $minutes
+    uptime_seconds=$(get_uptime_seconds)
+    current_time=$(date +%s)
+    boot_time=$((current_time - uptime_seconds))
+    current_date=$(date +%Y-%m-%d)
+
+    # Calculate the actual boot date
+    local boot_date
+    boot_date=$(date -d "@${boot_time}" +%Y-%m-%d)
+
+    # Get previously accumulated time for today (before current boot)
+    local prev_accumulated
+    prev_accumulated=$(get_daily_accumulated_time)
+
+    # Get the last recorded uptime for the current session to calculate increment
+    local last_session_uptime
+    last_session_uptime=$(get_current_session_state "$boot_time" "$uptime_seconds")
+
+    # Calculate incremental time since last recording
+    local incremental_time
+    incremental_time=$((uptime_seconds - last_session_uptime))
+
+    # If this is a new boot (last_session_uptime is 0), we can't use incremental approach
+    if [ "$last_session_uptime" -eq 0 ]; then
+        # This is a new boot session, so the accumulated time from before the boot is what we have
+        # We'll add the current total uptime for this boot to the previous accumulated time
+        incremental_time=$uptime_seconds
+    elif [ "$incremental_time" -lt 0 ]; then
+        # This means system time changed or we're in a new boot session
+        # Treat it as a new boot session
+        incremental_time=$uptime_seconds
+    fi
+
+    # Check if we need to handle multi-day uptime
+    if [ "$boot_date" != "$current_date" ]; then
+        handle_multiday_uptime "$boot_time" "$current_time" "$uptime_seconds"
     else
-        printf "%02d:%02d" $hours $minutes
+        # Simple case: boot and current time are on the same day
+        # Calculate seconds for only this day (from when system started being active until now)
+        local day_start
+        day_start=$(date -d "${current_date} 00:00:00" +%s)
+
+        # Calculate time from beginning of day to boot time (if booted today)
+        local effective_boot_time
+        effective_boot_time=$((boot_time > day_start ? boot_time : day_start))
+        local current_boot_seconds=$((current_time - effective_boot_time))
+
+        # Total accumulated time for the day (previous + current session)
+        local total_day_seconds=$((prev_accumulated + current_boot_seconds))
+
+        # Update the daily accumulator with the new total
+        update_daily_accumulator "$total_day_seconds"
+
+        # Update the session state for this boot
+        update_current_session_state "$boot_time" "$uptime_seconds"
+
+        # Update the log entry with the accumulated time for the day
+        update_or_add_entry "$current_date" "$boot_time" "$current_time" "$total_day_seconds"
     fi
 }
 
-# Function: Convert seconds to hours (decimal)
-seconds_to_hours() {
-    local total_seconds=$1
-    awk "BEGIN {printf \"%.2f\", $total_seconds/3600}"
+# Handle uptime spanning multiple days
+handle_multiday_uptime() {
+    local boot_time=$1
+    local current_time=$2
+    local total_uptime=$3
+
+    local boot_date current_date
+    boot_date=$(date -d "@${boot_time}" +%Y-%m-%d)
+    current_date=$(date -d "@${current_time}" +%Y-%m-%d)
+
+    # Generate all dates from boot to current
+    local date_cursor=$boot_time
+    local date_cursor_str
+
+    while true; do
+        date_cursor_str=$(date -d "@${date_cursor}" +%Y-%m-%d)
+
+        # Calculate day boundaries
+        local day_start day_end
+        day_start=$(date -d "${date_cursor_str} 00:00:00" +%s)
+        day_end=$(date -d "${date_cursor_str} 23:59:59" +%s)
+
+        # Determine time range for this day
+        local range_start range_end
+        range_start=$((boot_time > day_start ? boot_time : day_start))
+        range_end=$((current_time < day_end ? current_time : day_end))
+
+        # Calculate seconds for this day
+        local day_seconds=$((range_end - range_start))
+        [ $day_seconds -lt 0 ] && day_seconds=0
+
+        # For the current date, we need to add to any previously accumulated time
+        if [ "$date_cursor_str" = "$current_date" ]; then
+            local prev_accumulated
+            prev_accumulated=$(get_daily_accumulated_time)
+            day_seconds=$((day_seconds + prev_accumulated))
+            # Update accumulator to reflect that we've now accounted for this time
+            update_daily_accumulator "$day_seconds"
+        fi
+
+        # Update or add entry for this date
+        update_or_add_entry "$date_cursor_str" "$boot_time" "$current_time" "$day_seconds"
+
+        # Move to next day
+        [ "$date_cursor_str" = "$current_date" ] && break
+        date_cursor=$(date -d "${date_cursor_str} +1 day" +%s)
+    done
 }
 
-# Function: Display burn level
-display_burn_level() {
-    local total_hours=$1
-    local period=$2
-    local level
-    
-    case $period in
-        "daily")
-            level=$(get_burn_level_daily $total_hours)
-            ;;
-        "weekly")
-            level=$(get_burn_level_weekly $total_hours)
-            ;;
-        "monthly")
-            level=$(get_burn_level_monthly $total_hours)
-            ;;
-        *)
-            level=0
-            ;;
-    esac
-    
-    local color=$(get_burn_color $level)
-    local label=$(get_burn_label $level)
-    local reset="\033[0m"
-    
-    echo -e "${color}Burn Level: $label (${total_hours}h total uptime)${reset}"
-}
+# Update existing entry or add new one
+update_or_add_entry() {
+    local target_date=$1
+    local boot_time=$2
+    local current_time=$3
+    local current_day_seconds=$4
 
-# Function: Log current uptime
-log_uptime() {
-    # Ensure directory exists for log and lock files
-    mkdir -p "$(dirname "$LOG_FILE")"
+    local temp_file="${LOG_FILE}.tmp"
+    local found=0
 
-    # Acquire lock to prevent concurrent writes
-    exec 200>"$LOCK_FILE"
-    flock -n 200 || {
-        echo "Another instance is running. Exiting." >&2
-        exit 1
-    }
-    
-    # Get current date and time
-    local current_date=$(date '+%d/%m/%Y')
-    local current_time=$(date '+%H:%M:%S')
-    
-    # Get uptime
-    local uptime_sec=$(get_uptime_seconds)
-    local uptime_human=$(seconds_to_human $uptime_sec)
-    
-    # Create log entry
-    local log_entry="${current_date}|${current_time}|uptime_seconds=${uptime_sec}|uptime_human=\"${uptime_human}\""
-    
-    # Ensure log file exists
-    touch "$LOG_FILE" 2>/dev/null || {
-        echo "Cannot create log file: $LOG_FILE" >&2
-        exit 1
-    }
-    
-    # Check if this is a reboot (uptime is less than last entry for today)
-    local is_reboot=0
-    local last_uptime_today=0
-    
     if [ -f "$LOG_FILE" ] && [ -s "$LOG_FILE" ]; then
-        # Get the last entry for today
-        while IFS= read -r line; do
-            [ -z "$line" ] && continue
-            local line_date=$(echo "$line" | cut -d'|' -f1)
-            if [ "$line_date" = "$current_date" ]; then
-                local line_uptime=$(echo "$line" | grep -o 'uptime_seconds=[0-9]*' | cut -d'=' -f2)
-                if [ -n "$line_uptime" ]; then
-                    last_uptime_today=$line_uptime
-                fi
+        while IFS=' ' read -r log_date log_start log_last log_prev_total; do
+            if [ "$log_date" = "$target_date" ]; then
+                # For same date, simply update with the current accumulated value
+                # The accumulation is now handled by the daily accumulator logic
+                echo "$target_date $boot_time $current_time $current_day_seconds" >> "$temp_file"
+                found=1
+            else
+                # Keep other entries as-is
+                echo "$log_date $log_start $log_last $log_total" >> "$temp_file"
             fi
         done < "$LOG_FILE"
-        
-        # If current uptime is less than last logged uptime for today, it's a reboot
-        if [ $last_uptime_today -gt 0 ] && [ $uptime_sec -lt $last_uptime_today ]; then
-            is_reboot=1
+
+        if [ $found -eq 0 ]; then
+            # Append new entry
+            echo "$target_date $boot_time $current_time $current_day_seconds" >> "$temp_file"
         fi
+
+        mv "$temp_file" "$LOG_FILE"
+    else
+        # No log file or empty, create new entry
+        echo "$target_date $boot_time $current_time $current_day_seconds" > "$LOG_FILE"
     fi
-    
-    # Always append new entry (don't replace)
-    echo "$log_entry" >> "$LOG_FILE"
-    chmod 644 "$LOG_FILE"
-    
-    # Release lock
-    flock -u 200
 }
 
-# Function: Parse log entry and extract uptime in seconds
-parse_uptime() {
-    local line=$1
-    echo "$line" | grep -o 'uptime_seconds=[0-9]*' | cut -d'=' -f2
-}
-
-# Function: Calculate statistics
-calculate_statistics() {
-    local period=$1
-    shift
-    local -a values=("$@")
-    local count=${#values[@]}
+# Show daily summary
+show_day() {
+    local today
+    today=$(date +%Y-%m-%d)
+    local total_seconds=0
     
-    if [ $count -eq 0 ]; then
-        echo "No data available"
-        return
-    fi
-    
-    # Sort values numerically
-    local sorted=($(printf '%s\n' "${values[@]}" | sort -n))
-    
-    # Minimum
-    local min=${sorted[0]}
-    
-    # Maximum
-    local max=${sorted[$((count-1))]}
-    
-    # Calculate total sum
-    local sum=0
-    for val in "${values[@]}"; do
-        sum=$((sum + val))
-    done
-    
-    # Mean (using awk for floating point)
-    local mean=$(awk "BEGIN {printf \"%.2f\", $sum/$count}")
-    
-    # Convert to hours for burn level display
-    local total_hours=$(seconds_to_hours $sum)
-    local avg_hours=$(seconds_to_hours ${mean%.*})
-    
-    # Output statistics
-    echo "Sample Size:   $count measurements"
-    echo "Total Uptime:  $(seconds_to_human $sum) (${total_hours}h)"
-    echo "Average:       $(seconds_to_human ${mean%.*}) (${avg_hours}h)"
-    echo "Minimum:       $(seconds_to_human $min)"
-    echo "Maximum:       $(seconds_to_human $max)"
-    echo ""
-    
-    # Display burn level based on TOTAL uptime for the period
-    echo "=== BURN LEVEL ANALYSIS ==="
-    display_burn_level ${total_hours%.*} "$period"
-}
-
-# Function: Convert DD/MM/YYYY to YYYYMMDD for simple comparison
-date_to_sortable() {
-    local ddmmyyyy=$1
-    local day=$(echo "$ddmmyyyy" | cut -d'/' -f1)
-    local month=$(echo "$ddmmyyyy" | cut -d'/' -f2)
-    local year=$(echo "$ddmmyyyy" | cut -d'/' -f3)
-    echo "${year}${month}${day}"
-}
-
-# Function: Get date N days ago in DD/MM/YYYY format
-get_date_days_ago() {
-    local days_ago=$1
-    date -d "$days_ago days ago" '+%d/%m/%Y' 2>/dev/null || date -v-${days_ago}d '+%d/%m/%Y' 2>/dev/null
-}
-
-# Function: Filter log by date range and aggregate by day
-filter_logs() {
-    local days_back=$1
-    local period=$2
-    
-    if [ ! -f "$LOG_FILE" ]; then
-        echo "Log file not found: $LOG_FILE" >&2
-        return 1
-    fi
-    
-    # Get today's date
-    local today=$(date '+%d/%m/%Y')
-    local today_sortable=$(date_to_sortable "$today")
-    
-    # Get cutoff date
-    local cutoff_date=$(get_date_days_ago $days_back)
-    local cutoff_sortable=$(date_to_sortable "$cutoff_date")
-    
-    # Use associative array to store daily totals
-    declare -A daily_totals
-    declare -A daily_entries
-    
-    echo "Date       |Sessions|Total Daily Uptime"
-    echo "-----------|--------|------------------------"
-    
-    while IFS= read -r line; do
-        # Skip empty or malformed lines
-        [ -z "$line" ] && continue
-        echo "$line" | grep -q '|' || continue
-        
-        # Extract date
-        local log_date=$(echo "$line" | cut -d'|' -f1)
-        local log_sortable=$(date_to_sortable "$log_date")
-        
-        # Compare dates (YYYYMMDD format allows simple numeric comparison)
-        if [ "$log_sortable" -ge "$cutoff_sortable" ] && [ "$log_sortable" -le "$today_sortable" ]; then
-            local uptime_sec=$(parse_uptime "$line")
-            
-            if [ -n "$uptime_sec" ] && [ "$uptime_sec" -ge 0 ]; then
-                # Add to daily total
-                if [ -z "${daily_totals[$log_date]}" ]; then
-                    daily_totals[$log_date]=0
-                    daily_entries[$log_date]=0
-                fi
-                daily_totals[$log_date]=$((${daily_totals[$log_date]} + uptime_sec))
-                daily_entries[$log_date]=$((${daily_entries[$log_date]} + 1))
+    if [ -f "$LOG_FILE" ]; then
+        while IFS=' ' read -r log_date _ _ log_total; do
+            if [ "$log_date" = "$today" ]; then
+                total_seconds=$log_total
+                break
             fi
-        fi
-    done < "$LOG_FILE"
+        done < "$LOG_FILE"
+    fi
     
-    # Display daily totals in chronological order
-    local -a all_daily_values=()
-    for log_date in $(printf '%s\n' "${!daily_totals[@]}" | sort -t'/' -k3,3n -k2,2n -k1,1n); do
-        local total_sec=${daily_totals[$log_date]}
-        local num_sessions=${daily_entries[$log_date]}
-        local total_human=$(seconds_to_human $total_sec)
-        
-        printf "%s|%-8d|%s\n" "$log_date" "$num_sessions" "$total_human"
-        all_daily_values+=("$total_sec")
-    done
+    local burn_level
+    burn_level=$(get_burn_level_daily "$total_seconds")
+    local burn_color
+    burn_color=$(get_burn_color "$burn_level")
+    local burn_label
+    burn_label=$(get_burn_label "$burn_level")
+    local hms
+    hms=$(seconds_to_hms "$total_seconds")
     
-    echo ""
-    echo "=== UPTIME STATISTICS ==="
-    calculate_statistics "$period" "${all_daily_values[@]}"
+    printf "Today (%s): %s - %s%s%b\n" "$today" "$hms" "$burn_color" "$burn_label" "$COLOR_RESET"
 }
 
-# Main execution
-case "${1:-}" in
-    --today)
-        filter_logs 0 "daily"
-        ;;
-    --week)
-        filter_logs 6 "weekly"
-        ;;
-    --month)
-        filter_logs 29 "monthly"
-        ;;
-    "")
-        log_uptime
-        ;;
-    *)
-        echo "Usage: $0 [--today|--week|--month]" >&2
-        exit 1
-        ;;
-esac
+# Show weekly summary
+show_week() {
+    local total_seconds=0
+    local i
+    
+    for i in {6..0}; do
+        local target_date
+        target_date=$(date -d "-${i} days" +%Y-%m-%d)
+        local day_seconds=0
+        
+        if [ -f "$LOG_FILE" ]; then
+            while IFS=' ' read -r log_date _ _ log_total; do
+                if [ "$log_date" = "$target_date" ]; then
+                    day_seconds=$log_total
+                    break
+                fi
+            done < "$LOG_FILE"
+        fi
+        
+        local burn_level
+        burn_level=$(get_burn_level_daily "$day_seconds")
+        local burn_color
+        burn_color=$(get_burn_color "$burn_level")
+        local burn_label
+        burn_label=$(get_burn_label "$burn_level")
+        local hms
+        hms=$(seconds_to_hms "$day_seconds")
+        
+        printf "%s %s %s%s%b\n" "$target_date" "$hms" "$burn_color" "$burn_label" "$COLOR_RESET"
+        total_seconds=$((total_seconds + day_seconds))
+    done
+    
+    local week_burn
+    week_burn=$(get_burn_level_weekly "$total_seconds")
+    local week_color
+    week_color=$(get_burn_color "$week_burn")
+    local week_label
+    week_label=$(get_burn_label "$week_burn")
+    local week_hms
+    week_hms=$(seconds_to_hms "$total_seconds")
+    
+    printf "\n"
+    printf "Weekly Total: %s - %s%s%b\n" "$week_hms" "$week_color" "$week_label" "$COLOR_RESET"
+}
+
+# Show monthly summary
+show_month() {
+    local month_total=0
+
+    # Loop weeks from oldest to newest (4 weeks total)
+    # Follow pattern similar to week but for 4 weeks instead of 7 days
+    for week_back in {4..1}; do
+        local week_seconds=0
+
+        # Calculate the range for each week:
+        # week_back = 4: 27-21 days ago (oldest)
+        # week_back = 3: 20-14 days ago
+        # week_back = 2: 13-7 days ago
+        # week_back = 1: 6-0 days ago (most recent)
+        local start_day=$((7 * week_back - 1))    # 27, 20, 13, 6 days ago
+        local end_day=$((start_day - 6))          # 21, 14,  7, 0 days ago
+
+        for i in $(seq $end_day $start_day); do
+            local target_date
+            target_date=$(date -d "-${i} days" +%Y-%m-%d)
+
+            if [ -f "$LOG_FILE" ]; then
+                while IFS=' ' read -r log_date _ _ log_total; do
+                    if [ "$log_date" = "$target_date" ]; then
+                        week_seconds=$((week_seconds + log_total))
+                        break
+                    fi
+                done < "$LOG_FILE"
+            fi
+        done
+
+        local burn_level
+        burn_level=$(get_burn_level_weekly "$week_seconds")
+        local burn_color
+        burn_color=$(get_burn_color "$burn_level")
+        local burn_label
+        burn_label=$(get_burn_label "$burn_level")
+        local hms
+        hms=$(seconds_to_hms "$week_seconds")
+
+        printf "Week %d: %s - %s%s%b\n" "$((5-week_back))" "$hms" "$burn_color" "$burn_label" "$COLOR_RESET"
+        month_total=$((month_total + week_seconds))
+    done
+
+    local month_burn
+    month_burn=$(get_burn_level_monthly "$month_total")
+    local month_color
+    month_color=$(get_burn_color "$month_burn")
+    local month_label
+    month_label=$(get_burn_label "$month_burn")
+    local month_hms
+    month_hms=$(seconds_to_hms "$month_total")
+
+    printf "\n"
+    printf "Monthly Total: %s - %s%s%b\n" "$month_hms" "$month_color" "$month_label" "$COLOR_RESET"
+}
+
+# Show help
+show_help() {
+    cat << EOF
+upm - Uptime Monitor
+
+Usage:
+  upm              Log/update current uptime
+  upm --day        Show today's uptime summary
+  upm --week       Show weekly uptime summary (past 7 days)
+  upm --month      Show monthly uptime summary (4 weeks)
+  upm --help       Show this help message
+
+Log file: ${LOG_FILE}
+EOF
+}
+
+# Main
+main() {
+    init_upm
+    
+    case "${1:-}" in
+        --day)
+            show_day
+            ;;
+        --week)
+            show_week
+            ;;
+        --month)
+            show_month
+            ;;
+        --help)
+            show_help
+            ;;
+        "")
+            log_uptime
+            ;;
+        *)
+            echo "Unknown option: $1"
+            show_help
+            exit 1
+            ;;
+    esac
+}
+
+main "$@"
